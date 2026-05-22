@@ -16,14 +16,22 @@ import io
 from flask import Flask, request, jsonify, send_file, render_template
 from openpyxl import load_workbook
 
-# Import reconcile() — try local copy first (Railway), then parent dir (local dev)
-try:
-    from aircon_check_final import reconcile
-except ImportError:
-    PARENT_DIR = str(Path(__file__).resolve().parent.parent)
-    if PARENT_DIR not in sys.path:
-        sys.path.insert(0, PARENT_DIR)
-    from aircon_check_final import reconcile
+# Lazy import of reconcile() — deferred to first use so app can start even if deps have issues
+_reconcile = None
+
+def get_reconcile():
+    global _reconcile
+    if _reconcile is None:
+        try:
+            from aircon_check_final import reconcile
+            _reconcile = reconcile
+        except ImportError:
+            PARENT_DIR = str(Path(__file__).resolve().parent.parent)
+            if PARENT_DIR not in sys.path:
+                sys.path.insert(0, PARENT_DIR)
+            from aircon_check_final import reconcile
+            _reconcile = reconcile
+    return _reconcile
 
 app = Flask(__name__)
 
@@ -60,6 +68,20 @@ def parse_summary_text(summary_text):
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/health")
+def health():
+    """Debug endpoint to check if all imports work."""
+    status = {"status": "ok", "imports": {}}
+    for mod_name in ["flask", "pdfplumber", "openpyxl", "aircon_check_final"]:
+        try:
+            __import__(mod_name)
+            status["imports"][mod_name] = "ok"
+        except Exception as e:
+            status["imports"][mod_name] = str(e)
+            status["status"] = "error"
+    return jsonify(status)
 
 
 @app.route("/upload", methods=["POST"])
@@ -111,7 +133,7 @@ def upload():
         old_stdout = sys.stdout
         sys.stdout = captured
         try:
-            summary_text, output_path = reconcile(str(session_folder))
+            summary_text, output_path = get_reconcile()(str(session_folder))
         finally:
             sys.stdout = old_stdout
         captured_output = captured.getvalue()
